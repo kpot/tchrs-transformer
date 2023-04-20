@@ -1,0 +1,27 @@
+[package]
+name = "tchrs-transformer"
+version = "0.1.0"
+edition = "2021"
+authors = ["Kirill Mavreshko <kimavr@gmail.com>"]
+description = "Transformer library for tch-rs"
+repository = "https://github.com/kpot/tchrs-transformer"
+
+[[example]]
+name = "run-albert"
+required-features = ["examples"]
+
+[dependencies]
+tch = { version = "^0.11" }
+ureq = { version = "2.6.2", optional = true }
+zip = { version = "^0.6", optional = true }
+md-5 = { version = "^0.10", optional = true }
+regex = { version = "^1.7", optional = true }
+rand = { version = "^0.8", optional = true }
+tokenizers = { version = "^0.13", optional = true, default-features = false, features = ["onig"] }
+rmp-serde = { version = "^1.1", optional = true }
+rayon = { version = "^1.7", optional = true }
+once_cell = { version = "^1.17", optional = true }
+
+[features]
+download = ["dep:ureq", "dep:zip", "dep:md-5"]
+examples = ["dep:regex", "dep:tokenizers", "dep:rand", "dep:rmp-serde", "dep:rayon", "dep:once_cell", "download"]
