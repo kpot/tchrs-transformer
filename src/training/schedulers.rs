@@ -59,15 +59,13 @@ impl CosineLRSchedule {
                 result = self.lr_low
                     + 0.5
                         * (lr_max - self.lr_low)
-                        * (1.0 + (std::f64::consts::PI * t_cur / period as f64).cos());
+                        * (1.0 + (std::f64::consts::PI * t_cur / period).cos());
+            } else if t_cur == period {
+                period *= self.period_mult;
+                lr_max *= self.high_lr_mult;
+                t_cur = 0.0;
             } else {
-                if t_cur == period {
-                    period *= self.period_mult;
-                    lr_max *= self.high_lr_mult;
-                    t_cur = 0.0;
-                } else {
-                    t_cur += 1.0;
-                }
+                t_cur += 1.0;
             }
         }
         result

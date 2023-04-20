@@ -8,7 +8,6 @@ use std::{
 
 type FileHash = [u8; 16];
 
-#[cfg(feature = "download")]
 fn display_copy_progress(bytes_read: usize, bytes_total: usize, terminal_width: u16) {
     const BLANK_SPACES: u16 = 20;
     const TICK: &[u8; 1] = b"#";
@@ -18,7 +17,7 @@ fn display_copy_progress(bytes_read: usize, bytes_total: usize, terminal_width: 
     } else {
         1
     } as usize;
-    let display_ticks = ticks_total as usize * bytes_read / bytes_total;
+    let display_ticks = ticks_total * bytes_read / bytes_total;
     {
         let mut stdout = io::stdout().lock();
         stdout.write_all(b"\r[").ok();
@@ -34,7 +33,6 @@ fn display_copy_progress(bytes_read: usize, bytes_total: usize, terminal_width: 
     print!("{:>15} B", bytes_read);
 }
 
-#[cfg(feature = "download")]
 fn hash_file(path: impl AsRef<path::Path>) -> io::Result<String> {
     let mut file = fs::File::open(path.as_ref())?;
     let mut hasher = Md5::new();
@@ -48,7 +46,6 @@ fn hash_file(path: impl AsRef<path::Path>) -> io::Result<String> {
 }
 
 /// An analog for std::io::copy, but with a nice progress bar.
-#[cfg(feature = "download")]
 fn copy_with_progress<W>(
     mut from: Box<dyn io::Read>,
     to: &mut W,
@@ -79,7 +76,6 @@ where
 /// Dowloads a file from a URL if it's not already present in its target location
 /// or its MD5 hash is different there.
 /// Useful for fetching various datasets.
-#[cfg(feature = "download")]
 pub fn download(
     origin_url: impl AsRef<str>,
     hash: impl AsRef<str>,
@@ -103,10 +99,10 @@ pub fn download(
                 .and_then(|header_str| header_str.parse::<usize>().ok());
 
             let response_reader = response.into_reader();
-            let mut target_file = fs::File::create(&path)?;
+            let mut target_file = fs::File::create(path)?;
             println!("Downloading: {} as {}", url, path.to_string_lossy());
             copy_with_progress(response_reader, &mut target_file, content_length)?;
-            print!("\n");
+            println!();
             Ok(())
         } else {
             Err(io::Error::new(

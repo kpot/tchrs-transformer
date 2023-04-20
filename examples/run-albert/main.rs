@@ -5,13 +5,10 @@
 //! For the sake of simplicity, this example uses only MLM task, which means it does not bother
 //! with sentence order predictions/classification.
 
-use std::io::{BufRead, Write};
+use std::io::Write;
 use std::path;
-use std::{array, fs};
 
-// use nn::Module;
-use rand::{thread_rng, Rng};
-use tch::nn::{self, OptimizerConfig, RNNConfig};
+use tch::nn::{self, OptimizerConfig};
 use tch::Tensor;
 use tchrs_transformer::models::Albert;
 use tchrs_transformer::training::mlm::{DocCollectionSampler, SampledBatch};

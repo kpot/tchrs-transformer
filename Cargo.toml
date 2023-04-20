@@ -25,3 +25,4 @@ once_cell = { version = "^1.17", optional = true }
 [features]
 download = ["dep:ureq", "dep:zip", "dep:md-5"]
 examples = ["dep:regex", "dep:tokenizers", "dep:rmp-serde", "dep:rayon", "dep:once_cell", "download"]
+default = ["examples"]

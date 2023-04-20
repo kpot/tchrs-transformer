@@ -58,10 +58,9 @@ fn attention(q: &Tensor, k: &Tensor, v: &Tensor, causal: bool) -> Tensor {
     let scaled_attention = qkt.softmax(-1, qkt.kind()).matmul(&v.transpose(2, 1));
     // "Concatenating" heads by rearranging dimensions
     // and reshaping the result
-    let heads = scaled_attention
+    scaled_attention
         .transpose(2, 1)
-        .reshape(&[-1, q_seq_len, num_heads * value_dim]);
-    heads
+        .reshape(&[-1, q_seq_len, num_heads * value_dim])
 }
 
 /// Multi-head attention described in paper "Attention Is All You Need"
@@ -159,8 +158,8 @@ impl MultiHeadSelfAttention {
             &qkv_chunks[2].squeeze_dim(seam_dim_index),
             self.causal,
         );
-        let output_projection = attention_out.matmul(&self.output_weights);
-        output_projection
+        // Output projection
+        attention_out.matmul(&self.output_weights)
     }
 }
 
@@ -307,8 +306,7 @@ impl MultiHeadAttention {
             self.key_query_dim as i64,
         ]);
         let attention_out = attention(&q, &k, &v, self.causal);
-        let output_projection = attention_out.matmul(&self.output_weights);
-        output_projection
+        attention_out.matmul(&self.output_weights)
     }
 }
 

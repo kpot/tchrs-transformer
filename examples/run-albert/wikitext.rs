@@ -5,7 +5,7 @@ use tokenizers::Tokenizer;
 use crate::tokenization::{
     encode_and_cache_texts, load_encoded_docs, train_tokenizer, TokenizedDocs,
 };
-use tchrs_transformer::utils::download;
+use tchrs_transformer::download::download;
 
 const VOCABULARY_SIZE: usize = 16384;
 

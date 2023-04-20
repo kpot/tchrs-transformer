@@ -1,4 +1,4 @@
-use tch::nn::{self, LayerNormConfig};
+use tch::nn;
 use tch::nn::{Module, ModuleT};
 use tch::Tensor;
 
@@ -83,7 +83,7 @@ impl TiedOutputEmbedding {
             .forward(xs)
             .gelu("none")
             .apply(&self.layer_norm)
-            .view([-1, input_dim as i64]);
+            .view([-1, input_dim]);
         // matching with the embedding
         // the embedding matrix is expected to be the shape of (vocabulary_size, embedding_dim)
         // output shaped as (batch_size, seq_len, vocab_size)
@@ -158,8 +158,7 @@ impl nn::ModuleT for AlbertTransformerBlock {
             .gelu("none")
             .apply(&self.transition2_layer);
         let post_residual2 = post_transitional.dropout(self.dropout, train) + norm1_output;
-        let output = post_residual2.apply(&self.norm2_layer);
-        output
+        post_residual2.apply(&self.norm2_layer)
     }
 }
 
@@ -231,9 +230,7 @@ impl Albert {
         for _depth in 0..self.config.transformer_depth {
             step_output = self.transformer_step.forward_t(&step_output, training);
         }
-        let output = self
-            .output_embedding
-            .forward(&self.token_embedding.ws, &step_output);
-        output
+        self.output_embedding
+            .forward(&self.token_embedding.ws, &step_output)
     }
 }

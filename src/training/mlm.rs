@@ -49,7 +49,7 @@ impl DocumentMasker {
                     return i + 1;
                 }
             }
-            return 1;
+            1
         };
 
         let mut rng = rand::thread_rng();
@@ -59,7 +59,7 @@ impl DocumentMasker {
         let mut masked_tokens = 0;
         while masked_tokens < tokens_to_mask_budget {
             let span_len = choose_span_len();
-            let span_start = rng.sample(&document_span);
+            let span_start = rng.sample(document_span);
             let span_end = (span_start + span_len).min(doc.len());
             self.mask_buffer[span_start..span_end].fill(true);
             let strategy_threshold: f32 = rng.gen();
@@ -69,7 +69,7 @@ impl DocumentMasker {
             } else if strategy_threshold < 0.9 {
                 // 10% of the time we replace the tokens with other randomly selected tokens
                 self.masked_doc_buffer[span_start..span_end]
-                    .fill_with(|| rng.sample(&vocabulary_span));
+                    .fill_with(|| rng.sample(vocabulary_span));
             } else {
                 // and 10% of the time we keep the tokens the same
             }
@@ -178,7 +178,7 @@ impl DocCollectionSampler {
             })
             .collect();
 
-        let epoch_size = if samples_per_doc.len() > 0 {
+        let epoch_size = if !samples_per_doc.is_empty() {
             estimate_samples_per_epoch(&samples_per_doc) / batch_size
         } else {
             0
@@ -242,7 +242,7 @@ impl DocCollectionSampler {
                     self.max_sequence_len
                 };
                 let doc_slice = &doc[slice_start..(slice_start + max_slice_len).min(doc.len())];
-                let (masked_doc_slice, mask_slice) = masker.mask_document(&doc_slice);
+                let (masked_doc_slice, mask_slice) = masker.mask_document(doc_slice);
                 // The size all text/mask buffers must be filled to at the end of this iteration
                 let step_sequence_len = batch_num * self.max_sequence_len;
                 // filling with buffers
