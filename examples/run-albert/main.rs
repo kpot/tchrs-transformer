@@ -86,28 +86,36 @@ fn run_model(
     }
 }
 
-fn vs_named_tensors<T: AsRef<std::path::Path>>(
+/// This function is a small hack allowing to load stored variables even if some of them
+/// are missing from the file. This helps in tinkering with a "live" model.
+fn load_var_store<T: AsRef<std::path::Path>>(
     vs: &mut nn::VarStore,
     path: T,
-) -> Result<std::collections::HashMap<String, Tensor>, tch::TchError> {
-    let named_tensors = match path.as_ref().extension().and_then(|x| x.to_str()) {
-        Some("bin") | Some("pt") => Tensor::loadz_multi_with_device(&path, vs.device()),
-        Some(_) | None => Tensor::load_multi_with_device(&path, vs.device()),
-    };
-    Ok(named_tensors?.into_iter().collect())
-}
-
-fn load_store_ignoring<T: AsRef<std::path::Path>>(
-    vs: &mut nn::VarStore,
-    path: T,
+    ignore_missing_tensors: bool,
 ) -> Result<(), tch::TchError> {
+    fn vs_named_tensors<T: AsRef<std::path::Path>>(
+        vs: &mut nn::VarStore,
+        path: T,
+    ) -> Result<std::collections::HashMap<String, Tensor>, tch::TchError> {
+        let named_tensors = match path.as_ref().extension().and_then(|x| x.to_str()) {
+            Some("bin") | Some("pt") => Tensor::loadz_multi_with_device(&path, vs.device()),
+            Some(_) | None => Tensor::load_multi_with_device(&path, vs.device()),
+        };
+        Ok(named_tensors?.into_iter().collect())
+    }
+
     let named_tensors = vs_named_tensors(vs, &path)?;
     let mut variables = vs.variables_.lock().unwrap();
     for (name, var) in variables.named_variables.iter_mut() {
         match named_tensors.get(name) {
             Some(src) => tch::no_grad(|| var.f_copy_(src).map_err(|e| e.path_context(name)))?,
             None => {
-                // DO nothing
+                if !ignore_missing_tensors {
+                    return Err(tch::TchError::TensorNameNotFound(
+                        name.to_string(),
+                        path.as_ref().to_string_lossy().into_owned(),
+                    ));
+                }
             }
         }
     }
@@ -208,10 +216,7 @@ fn main() -> std::io::Result<()> {
         .root()
         .var("epoch", &[], tch::nn::Init::Const(1.0));
     if model_store_path.exists() {
-        load_store_ignoring(&mut var_store, &model_store_path).expect("Unable to load model");
-        // var_store
-        //     .load(&model_store_path)
-        //     .expect("Unable to load model");
+        load_var_store(&mut var_store, &model_store_path, true).expect("Unable to load model");
     }
 
     let cosine_schedule = CosineLRSchedule::new(LEARNING_RATE, LEARNING_RATE / 30.0);
