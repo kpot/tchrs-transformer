@@ -1,5 +1,5 @@
 use tch::nn;
-use tch::nn::{Module, ModuleT};
+use tch::nn::Module;
 use tch::Tensor;
 
 use crate::attention::MultiHeadSelfAttention;
@@ -146,11 +146,14 @@ impl AlbertTransformerBlock {
             dropout: config.residual_dropout,
         }
     }
-}
 
-impl nn::ModuleT for AlbertTransformerBlock {
-    fn forward_t(&self, input: &Tensor, train: bool) -> Tensor {
-        let att = self.attention.forward(input);
+    pub fn forward_t(
+        &self,
+        input: &Tensor,
+        attention_mask: Option<&Tensor>,
+        train: bool,
+    ) -> Tensor {
+        let att = self.attention.forward(input, attention_mask);
         let post_residual1 = att.dropout(self.dropout, train) + input;
         let norm1_output = post_residual1.apply(&self.norm1_layer);
         let post_transitional = norm1_output
@@ -216,7 +219,13 @@ impl Albert {
     /// `input_offsets` is an integer tensor too and has the shape of `(batch_size,)`.
     /// It stores the number of tokens from the context that preceed the current sequence.
     /// This allows to properly select the positional embeddings.
-    pub fn forward_t(&self, input: &Tensor, input_offsets: &Tensor, training: bool) -> Tensor {
+    pub fn forward_t(
+        &self,
+        input: &Tensor,
+        input_offsets: &Tensor,
+        attention_masks: Option<&Tensor>,
+        training: bool,
+    ) -> Tensor {
         let (batch_size, sequence_len) = input.size2().expect("The input must be a 2D tensor");
         let position_indices = Tensor::arange(sequence_len, (tch::Kind::Int, input.device()))
             .reshape(&[1, sequence_len])
@@ -228,7 +237,9 @@ impl Albert {
             .apply(&self.input_layer_norm)
             .dropout(self.config.residual_dropout, training);
         for _depth in 0..self.config.transformer_depth {
-            step_output = self.transformer_step.forward_t(&step_output, training);
+            step_output = self
+                .transformer_step
+                .forward_t(&step_output, attention_masks, training);
         }
         self.output_embedding
             .forward(&self.token_embedding.ws, &step_output)

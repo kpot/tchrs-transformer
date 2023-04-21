@@ -74,7 +74,12 @@ fn run_model(
             tokenizer.decode(sample_tokens, false)
         );
         let batch = batch.to_device(device);
-        let model_output = model.forward_t(&batch.masked_docs, &batch.doc_offsets, false);
+        let model_output = model.forward_t(
+            &batch.masked_docs,
+            &batch.doc_offsets,
+            Some(&batch.padding_masks),
+            false,
+        );
         let output_tokens = tokens_from_tensor(&model_output.argmax(Some(-1), false));
         println!(
             "Output document: {:?}",
@@ -138,7 +143,12 @@ fn run_epoch_on_batches(
         let batch = batch.to_device(device);
         // Ignoring the offsets for the sake simplicity
         let zero_offsets = batch.doc_offsets.zeros_like();
-        let model_output = model.forward_t(&batch.masked_docs, &zero_offsets, optimizer.is_some());
+        let model_output = model.forward_t(
+            &batch.masked_docs,
+            &zero_offsets,
+            Some(&batch.padding_masks),
+            optimizer.is_some(),
+        );
         // Calculating the loss
         let targets = batch.docs.one_hot(tokenizer_vocabulary as i64);
         let per_example_cross_entropy = -(targets * model_output.log_softmax(-1, tch::Kind::Float))

@@ -14,7 +14,7 @@ const A3D_TENSOR: &str = "Tensor must be 3-dimensional";
 /// on what has happened before the position, not after.
 /// Argument `qkt` is a scaled dot-product of Q and K.T,
 /// shaped as `(batch, num_heads, q_seq_len, k_seq_len)`.
-fn mask_attention(qkt: Tensor) -> Tensor {
+fn causal_attention_mask(qkt: Tensor) -> Tensor {
     // Practically, q_seq_len and k_seq_len will always be the same
     let (_, _, q_seq_len, k_seq_len) = qkt.size4().unwrap();
     // Creates a boolean mask filled with `false` on and below the diagonal.
@@ -36,31 +36,45 @@ fn mask_attention(qkt: Tensor) -> Tensor {
 /// * `q`: (batch_size, q_seq_len, num_heads, d_k)
 /// * `v`: (batch_size, v_seq_len, num_heads, d_v)
 /// * `k`: (batch_size, k_seq_len, num_heads, d_k)
+/// * `attention_mask`: 1s or 0s for keys that should and should not be attended,
+///    shaped as (batch_size, k_seq_len)
 /// * `causal`: whether the causal mask must be applied to the QK product.
 ///
 /// Returns a tensor shaped as `(batch_size, q_seq_len, num_heads * d_v)`
-fn attention(q: &Tensor, k: &Tensor, v: &Tensor, causal: bool) -> Tensor {
-    let (_, q_seq_len, num_heads, key_query_dim) = q.size4().expect(A4D_TENSOR);
-    let (_, _, _, value_dim) = v.size4().expect(A4D_TENSOR);
+fn attention(
+    q: &Tensor,
+    k: &Tensor,
+    v: &Tensor,
+    attention_mask: Option<&Tensor>,
+    causal: bool,
+) -> Tensor {
+    let (batch_size, q_seq_len, num_heads, _) = q.size4().expect(A4D_TENSOR);
+    let (_, _, _, key_value_dim) = v.size4().expect(A4D_TENSOR);
     // Q * transposed(K) / sqrt(d_k)
-    let qkt_scaled = q.transpose(2, 1).matmul(
+    // The result will have shape of (batch, num_heads, q_seq_len, k_seq_len)
+    let mut qkt_scaled = q.transpose(2, 1).matmul(
         &k
             // first reshape into (batch, num_heads, seq_len, d_k)
             .transpose(2, 1)
             // ... then into (batch, num_heads, d_k, seq_len)
             .transpose(3, 2),
-    ) / (key_query_dim as f64).sqrt();
-    let qkt = if causal {
-        mask_attention(qkt_scaled)
-    } else {
-        qkt_scaled
-    };
-    let scaled_attention = qkt.softmax(-1, qkt.kind()).matmul(&v.transpose(2, 1));
+    ) / (key_value_dim as f64).sqrt();
+    if let Some(attention_mask) = attention_mask {
+        // setting keys we do not need to attend to a large negative, so that softmax
+        // will turn them into zeroes
+        qkt_scaled += -1e5 * (1.0 - attention_mask.view([batch_size, 1, 1, -1]));
+    }
+    if causal {
+        qkt_scaled = causal_attention_mask(qkt_scaled)
+    }
+    let scaled_attention = qkt_scaled
+        .softmax(-1, qkt_scaled.kind())
+        .matmul(&v.transpose(2, 1));
     // "Concatenating" heads by rearranging dimensions
     // and reshaping the result
     scaled_attention
         .transpose(2, 1)
-        .reshape(&[-1, q_seq_len, num_heads * value_dim])
+        .reshape(&[-1, q_seq_len, num_heads * key_value_dim])
 }
 
 /// Multi-head attention described in paper "Attention Is All You Need"
@@ -135,8 +149,10 @@ impl MultiHeadSelfAttention {
     /// have the same dimensionality, allowing to calculate them all with
     /// a single (faster) matrix multiplication.
     /// Parameter `input` should be a tensor `[batch_size, seq_len, model_dim]`.
+    /// Attention mask is an optional tensor of 1s and 0s shaped as `[batch_size, seq_len]`
+    /// and marking positions that should be attended (1s) and padding that should not (0s).
     /// Returns a tensor the shape of `[batch_size, seq_len, output_dim]`
-    pub fn forward(&self, input: &Tensor) -> Tensor {
+    pub fn forward(&self, input: &Tensor, attention_mask: Option<&Tensor>) -> Tensor {
         let (batch_size, seq_len, _) = input.size3().expect(A3D_TENSOR);
 
         let qkv = input.matmul(&self.qkv_weights).reshape(&[
@@ -156,6 +172,7 @@ impl MultiHeadSelfAttention {
             &qkv_chunks[0].squeeze_dim(seam_dim_index),
             &qkv_chunks[1].squeeze_dim(seam_dim_index),
             &qkv_chunks[2].squeeze_dim(seam_dim_index),
+            attention_mask,
             self.causal,
         );
         // Output projection
@@ -256,6 +273,8 @@ impl MultiHeadAttention {
     /// * `query_input`: `[batch_size, query_seq_len, query_input_dim]`.
     /// * `key_input`: `[batch_size, key_value_seq_len, key_input_dim]`.
     /// * `value_input`: `[batch_size, key_value_seq_len, value_input_dim]`.
+    /// * `attention_mask`: 1s or 0s for keys that should and should not be attended,
+    ///    shaped as (batch_size, key_value_seq_len)
     ///
     /// Returns a tensor the shape of `[batch_size, value_seq_len, output_dim]`
     pub fn forward(
@@ -263,6 +282,7 @@ impl MultiHeadAttention {
         query_input: &Tensor,
         key_input: &Tensor,
         value_input: &Tensor,
+        attention_mask: Option<&Tensor>,
     ) -> Tensor {
         let (value_batch_size, value_seq_len, _) = value_input.size3().expect(A3D_TENSOR);
         let (key_batch_size, key_seq_len, _) = key_input.size3().expect(A3D_TENSOR);
@@ -305,7 +325,7 @@ impl MultiHeadAttention {
             self.num_heads as i64,
             self.key_query_dim as i64,
         ]);
-        let attention_out = attention(&q, &k, &v, self.causal);
+        let attention_out = attention(&q, &k, &v, attention_mask, self.causal);
         attention_out.matmul(&self.output_weights)
     }
 }
@@ -365,13 +385,13 @@ mod test {
             -0.766915183691856, 1.5382586613794478, -0.725235732270125
         ]).reshape(&[batch_size, seq_len, num_heads * d_k]);
 
-        let result = super::attention(&query, &key, &value, false);
+        let result = super::attention(&query, &key, &value, None, false);
         let diff = (&expect_result - &result)
             .square()
             .sum(expect_result.kind());
         assert!(f64::from(&diff) < 1e-9);
 
-        let causal_result = super::attention(&query, &key, &value, true);
+        let causal_result = super::attention(&query, &key, &value, None, true);
         let diff = (&expect_causal_result - &causal_result)
             .square()
             .sum(expect_result.kind());
