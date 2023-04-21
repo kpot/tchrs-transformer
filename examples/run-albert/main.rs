@@ -151,33 +151,54 @@ fn run_epoch_on_batches(
         );
         // Calculating the loss
         let targets = batch.docs.one_hot(tokenizer_vocabulary as i64);
-        let per_example_cross_entropy = -(targets * model_output.log_softmax(-1, tch::Kind::Float))
-            .sum_dim_intlist(Some(LAST_AXIS), false, tch::Kind::Float);
+        let softmax_output = model_output.softmax(-1, tch::Kind::Float);
+        let output_log_softmax = model_output.log_softmax(-1, tch::Kind::Float);
+        let per_token_cross_entropy = -(targets * &output_log_softmax).sum_dim_intlist(
+            Some(LAST_AXIS),
+            false,
+            tch::Kind::Float,
+        );
         let float_replacement_masks = batch.replacement_masks.to_kind(tch::Kind::Float);
         let num_tokens_replaced = float_replacement_masks.sum(tch::Kind::Float);
-        let masked_loss = (&batch.padding_masks * &per_example_cross_entropy).sum(tch::Kind::Float)
-            / batch.padding_masks.sum(tch::Kind::Float);
+        let masked_loss = (&float_replacement_masks * &per_token_cross_entropy)
+            .sum(tch::Kind::Float)
+            / &num_tokens_replaced;
+
+        // Penalty for confidence of the output distribution, as described in
+        // "Regularizing Neural Networks by Penalizing Confident
+        // Output Distributions" (https://arxiv.org/abs/1701.06548)
+        const CONFIDENCE_PENALTY_WEIGHT: f64 = 0.1;
+        let per_token_confidence_penalty = -(softmax_output * &output_log_softmax).sum_dim_intlist(
+            Some(LAST_AXIS),
+            false,
+            tch::Kind::Float,
+        );
+        let masked_confidence_pendalty = (&float_replacement_masks * &per_token_confidence_penalty)
+            .sum(tch::Kind::Float)
+            / &num_tokens_replaced;
+        let loss = masked_loss + CONFIDENCE_PENALTY_WEIGHT * masked_confidence_pendalty;
+
         // Perplexity for masked tokens only
-        let repl_masked_perplexity = (per_example_cross_entropy
+        let repl_masked_perplexity = (per_token_cross_entropy
             .masked_select(&batch.replacement_masks)
             .sum(tch::Kind::Float)
             / &num_tokens_replaced)
             .exp();
         // Backprop
         if let Some(ref mut optimizer) = optimizer {
-            optimizer.backward_step(&masked_loss);
+            optimizer.backward_step(&loss);
         }
         if optimizer.is_some() {
             print!(
                 "\rBatch {} of {}. Loss: {}. Perplexity of replacements: {}",
                 batch_index + 1,
                 epoch_size,
-                f32::from(&masked_loss),
+                f32::from(&loss),
                 f32::from(&repl_masked_perplexity)
             );
             std::io::stdout().lock().flush().ok();
         }
-        epoch_total_loss += f32::from(&masked_loss);
+        epoch_total_loss += f32::from(&loss);
         epoch_total_repl_perplexity += f32::from(&repl_masked_perplexity);
         epoch_batches += 1.0;
     }
