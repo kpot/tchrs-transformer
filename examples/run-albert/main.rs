@@ -15,7 +15,7 @@ use tchrs_transformer::training::mlm::{DocCollectionSampler, SampledBatch};
 use tchrs_transformer::training::schedulers::CosineLRSchedule;
 use tokenizers::Tokenizer;
 
-const MAX_SEQUENCE_LEN: usize = 512;
+const MAX_SEQUENCE_LEN: usize = 256;
 const BATCH_SIZE: usize = 16;
 const LEARNING_RATE: f64 = 5e-5;
 const DATASET_FLAVOR: wikitext::WikiTextFlavor = wikitext::WikiTextFlavor::Raw2;
