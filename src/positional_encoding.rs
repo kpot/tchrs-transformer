@@ -1,14 +1,16 @@
 /// Constant coordinate encoding, described in paper "Univerasl Transformers"
 /// (https://arxiv.org/pdf/1807.03819.pdf), section 2.1.
 /// It's a more generalized version of positional encoding proposed
-/// in "Attention is all you need", in that it encodes the "time step"
-/// of the encoder, which is the number of each of the stacked self-attention blocks
-/// (each block gets its own positional information added to its input).
+/// in "Attention is all you need", in that it combines information about
+/// each token's location with the "time step" of the encoder itself,
+/// which is "the floor number" of a stacked attention block among
+/// its siblings. Thus each block gets its distinct "flavor" of positional
+/// information added to its input.
 ///
 /// Returns positional vector `Pt` of the encoding that should be added
-/// to the input befor each Transformer block `t` (one of `T` number of blocks).
+/// to the input before each Transformer block `t` (one of `T` number of blocks).
 /// It has shape `[batch_size, sequence_lenght, input_dim]` and constructed
-/// by the following formula:
+/// by the formula below:
 ///
 ///     P[i, k] = sin(i / 10000**(2*j/d)) + sin(t / 10000^(2*j/d)), if k = 2*j
 ///     P[i, k] = cos(i / 10000**(2*j/d)) + cos(t / 10000^(2*j/d)), if k = 2*j + 1
