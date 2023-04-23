@@ -247,7 +247,12 @@ fn main() -> std::io::Result<()> {
         load_var_store(&mut var_store, &model_store_path, true).expect("Unable to load model");
     }
 
-    let cosine_schedule = CosineLRSchedule::new(LEARNING_RATE, LEARNING_RATE / 30.0);
+    let cosine_schedule = CosineLRSchedule {
+        lr_high: LEARNING_RATE,
+        lr_low: LEARNING_RATE / 30.0,
+        warmup_period: 50,
+        ..Default::default()
+    };
     // loop {
     let mut min_avg_loss = f32::INFINITY;
     for _ in 1..10000 {

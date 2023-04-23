@@ -17,6 +17,7 @@
 /// If `warmup_period` is greater than zero, the learning rate will be
 /// linearly increased from `lr_low` to `lr_high` during the first
 /// `warmup_period` epochs before the warm restarts kick in.
+#[derive(Debug, Clone)]
 pub struct CosineLRSchedule {
     pub lr_high: f64,
     pub lr_low: f64,
@@ -24,6 +25,19 @@ pub struct CosineLRSchedule {
     pub period_mult: f64,
     pub high_lr_mult: f64,
     pub warmup_period: usize,
+}
+
+impl Default for CosineLRSchedule {
+    fn default() -> Self {
+        Self {
+            lr_high: 1e-5,
+            lr_low: 1e-7,
+            initial_period: 50,
+            period_mult: 2.0,
+            high_lr_mult: 0.97,
+            warmup_period: 0,
+        }
+    }
 }
 
 impl CosineLRSchedule {
@@ -41,8 +55,7 @@ impl CosineLRSchedule {
     /// Calculates a new learning rate for the given `epoch`.
     pub fn get_lr(&self, epoch: usize) -> f64 {
         if epoch < self.warmup_period {
-            let step_size = (self.lr_high - self.lr_low) / self.warmup_period as f64;
-            self.lr_low + epoch as f64 * step_size
+            self.lr_high * epoch as f64 / self.warmup_period as f64
         } else {
             self.get_lr_for_epoch(epoch - self.warmup_period)
         }
