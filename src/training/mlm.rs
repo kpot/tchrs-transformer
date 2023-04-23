@@ -81,19 +81,24 @@ impl DocumentMasker {
 
 #[derive(Debug)]
 pub struct SampledBatch {
-    pub docs: Tensor,
+    /// Samples (cutouts) from the original documents, unmodified
+    pub doc_slices: Tensor,
+    /// Offsets within the original (large) documents the samples were sliced from
     pub doc_offsets: Tensor,
-    pub masked_docs: Tensor,
+    /// Modified samples, with some of the tokens masked or replaced
+    pub masked_slices: Tensor,
+    /// Masks, indicating points of modifications within each sample
     pub replacement_masks: Tensor,
+    /// Masks of positions where the actual text lies, and wherere the padding was added
     pub padding_masks: Tensor,
 }
 
 impl SampledBatch {
     pub fn to_device(&self, device: tch::Device) -> Self {
         Self {
-            docs: self.docs.to(device),
+            doc_slices: self.doc_slices.to(device),
             doc_offsets: self.doc_offsets.to(device),
-            masked_docs: self.masked_docs.to(device),
+            masked_slices: self.masked_slices.to(device),
             replacement_masks: self.replacement_masks.to(device),
             padding_masks: self.padding_masks.to(device),
         }
@@ -262,10 +267,10 @@ impl DocCollectionSampler {
             }
             batches_left -= 1;
             Some(SampledBatch {
-                docs: Tensor::of_slice(&batch_docs).reshape(&batch_shape),
+                doc_slices: Tensor::of_slice(&batch_docs).reshape(&batch_shape),
                 doc_offsets: Tensor::of_slice(&batch_doc_offsets)
                     .reshape(&[self.batch_size as i64]),
-                masked_docs: Tensor::of_slice(&batch_masked_docs).reshape(&batch_shape),
+                masked_slices: Tensor::of_slice(&batch_masked_docs).reshape(&batch_shape),
                 replacement_masks: Tensor::of_slice(&batch_replacement_masks).reshape(&batch_shape),
                 padding_masks: Tensor::of_slice(&batch_padding_masks).reshape(&batch_shape),
             })

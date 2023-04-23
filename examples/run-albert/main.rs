@@ -10,10 +10,11 @@ use std::path;
 
 use tch::nn::{self, OptimizerConfig};
 use tch::Tensor;
-use tchrs_transformer::models::Albert;
+use tokenizers::Tokenizer;
+
+use tchrs_transformer::models::albert::Albert;
 use tchrs_transformer::training::mlm::{DocCollectionSampler, SampledBatch};
 use tchrs_transformer::training::schedulers::CosineLRSchedule;
-use tokenizers::Tokenizer;
 
 const MAX_SEQUENCE_LEN: usize = 256;
 const BATCH_SIZE: usize = 16;
@@ -68,14 +69,14 @@ fn run_model(
     );
     println!("Test run:\n=========");
     for batch in sampler.epoch_batches(|_| &doc_tokens) {
-        let sample_tokens = tokens_from_tensor(&batch.masked_docs);
+        let sample_tokens = tokens_from_tensor(&batch.masked_slices);
         println!(
             "Original (masked) document: {:?}",
             tokenizer.decode(sample_tokens, false)
         );
         let batch = batch.to_device(device);
         let model_output = model.forward_t(
-            &batch.masked_docs,
+            &batch.masked_slices,
             &batch.doc_offsets,
             Some(&batch.padding_masks),
             false,
@@ -144,13 +145,13 @@ fn run_epoch_on_batches(
         // Ignoring the offsets for the sake simplicity
         let zero_offsets = batch.doc_offsets.zeros_like();
         let model_output = model.forward_t(
-            &batch.masked_docs,
-            &zero_offsets,
+            &batch.masked_slices,
+            &batch.doc_offsets,
             Some(&batch.padding_masks),
             optimizer.is_some(),
         );
         // Calculating the loss
-        let targets = batch.docs.one_hot(tokenizer_vocabulary as i64);
+        let targets = batch.doc_slices.one_hot(tokenizer_vocabulary as i64);
         let softmax_output = model_output.softmax(-1, tch::Kind::Float);
         let output_log_softmax = model_output.log_softmax(-1, tch::Kind::Float);
         let per_token_cross_entropy = -(targets * &output_log_softmax).sum_dim_intlist(
