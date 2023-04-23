@@ -71,6 +71,7 @@ fn attention(
         .softmax(-1, qkt_scaled.kind())
         .matmul(&v.transpose(2, 1));
     // "Concatenating" heads by rearranging dimensions
+    // from (batch, num_heads, seq_len, key_value_dim)
     // and reshaping the result
     scaled_attention
         .transpose(2, 1)
@@ -109,7 +110,7 @@ impl MultiHeadSelfAttention {
     /// (in "seeing") only to itself and the precediing positions,
     /// which is useful in time series forecasting and language modelling.
     pub fn new(
-        vs: &nn::Path,
+        vs: nn::Path,
         causal: bool,
         input_dim: usize,
         num_heads: usize,
