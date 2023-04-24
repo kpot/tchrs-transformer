@@ -6,7 +6,7 @@
 use tch::nn::Module;
 use tch::{nn, Tensor};
 
-use crate::attention::MultiHeadSelfAttention;
+use crate::attention::standard::MultiHeadSelfAttention;
 use crate::embeddings::TiedOutputEmbedding;
 use crate::positional_encoding::transformer_coordinate_encoding;
 
