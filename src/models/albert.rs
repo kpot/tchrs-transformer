@@ -6,7 +6,7 @@
 use tch::nn::Module;
 use tch::{nn, Tensor};
 
-use crate::attention::standard::MultiHeadSelfAttention;
+use crate::attention::standard::{StandardMultiHeadSelfAttention, StandardSelfMhaConfig};
 use crate::embeddings::TiedOutputEmbedding;
 use crate::positional_encoding::transformer_coordinate_encoding;
 
@@ -92,20 +92,22 @@ pub struct TransformerBlock {
     norm2_layer: nn::LayerNorm,
     transition1_layer: nn::Linear,
     transition2_layer: nn::Linear,
-    attention: MultiHeadSelfAttention,
+    attention: StandardMultiHeadSelfAttention,
     config: TransformerBlockConfig,
 }
 
 impl TransformerBlock {
     pub fn new(p: nn::Path, config: TransformerBlockConfig) -> Self {
         const TRANSITION_SCALER: usize = 4;
-        let attention = MultiHeadSelfAttention::new(
+        let attention = StandardMultiHeadSelfAttention::new(
             &p / "attention",
-            false,
-            config.input_output_dim,
-            config.num_heads,
-            config.key_query_value_dim,
-            Some(config.input_output_dim),
+            StandardSelfMhaConfig {
+                input_dim: config.input_output_dim,
+                num_heads: config.num_heads,
+                head_key_query_value_dim: config.key_query_value_dim,
+                output_dim: config.input_output_dim,
+                causal: false,
+            },
         );
         let norm1_layer = nn::layer_norm(
             &p / "layer_norm1",
@@ -117,7 +119,7 @@ impl TransformerBlock {
             vec![config.input_output_dim as i64],
             Default::default(),
         );
-        let transition_dim = (TRANSITION_SCALER * attention.output_dim) as i64;
+        let transition_dim = (TRANSITION_SCALER * attention.config.output_dim) as i64;
         let transition1_layer = nn::linear(
             &p / "trans1",
             config.input_output_dim as i64,
@@ -160,7 +162,7 @@ impl TransformerBlock {
     ) -> Tensor {
         let att = self
             .attention
-            .forward(input, attention_mask)
+            .forward_t(input, attention_mask, train)
             .dropout(self.config.dropout, train);
         let post_residual1 = att + input;
         let norm1_output = post_residual1.apply(&self.norm1_layer);
@@ -183,7 +185,7 @@ impl TransformerBlock {
         let norm1_output = input.apply(&self.norm1_layer);
         let att = self
             .attention
-            .forward(&norm1_output, attention_mask)
+            .forward_t(&norm1_output, attention_mask, train)
             .dropout(self.config.dropout, train);
         let post_residual1 = att + input;
         let post_transitional = post_residual1

@@ -1,5 +1,9 @@
 //! Various forms of multi-head attention described in paper "Attention Is All You Need".
 
+use super::general::{
+    AttentionStrategy, CausalMhaConfig, GeneralMultiHeadAttention, GeneralMultiHeadSelfAttention,
+    MhaConfig, SelfMhaConfig,
+};
 use tch::{nn, Tensor};
 
 const A4D_TENSOR: &str = "Tensor must be 4-dimensional";
@@ -36,7 +40,7 @@ fn causal_attention_mask(qkt: Tensor) -> Tensor {
 /// * `q`: (batch_size, q_seq_len, num_heads, d_k)
 /// * `v`: (batch_size, v_seq_len, num_heads, d_v)
 /// * `k`: (batch_size, k_seq_len, num_heads, d_k)
-/// * `attention_mask`: 1s or 0s for keys that should and should not be attended,
+/// * `attention_mask`: 1s or 0s for keys that can or should not be attended,
 ///    shaped as (batch_size, k_seq_len)
 /// * `causal`: whether the causal mask must be applied to the QK product.
 ///
@@ -76,257 +80,100 @@ fn attention(
         .reshape(&[-1, q_seq_len, num_heads * key_value_dim])
 }
 
-/// Multi-head attention described in paper "Attention Is All You Need"
+#[derive(Debug, Clone)]
+pub struct StandardMhaConfig {
+    pub num_heads: usize,
+    pub head_key_query_dim: usize,
+    pub head_value_dim: usize,
+    pub input_query_dim: usize,
+    pub input_key_value_dim: usize,
+    pub output_dim: usize,
+    pub causal: bool,
+}
+
+#[rustfmt::skip]
+impl MhaConfig for StandardMhaConfig {
+    fn num_heads(&self) -> usize { self.num_heads }
+    fn head_key_query_dim(&self) -> usize { self.head_key_query_dim }
+    fn head_value_dim(&self) -> usize { self.head_value_dim }
+    fn input_query_dim(&self) -> usize { self.input_query_dim }
+    fn input_key_value_dim(&self) -> usize { self.input_key_value_dim }
+    fn output_dim(&self) -> usize { self.output_dim }
+}
+
+impl CausalMhaConfig for StandardMhaConfig {
+    fn is_causal(&self) -> bool {
+        self.causal
+    }
+}
+
+/// Canonical multi-head attention described in paper "Attention Is All You Need"
 /// (https://arxiv.org/pdf/1706.03762.pdf).
 ///
-/// This implementation is designed and optimized for a case of self-attention,
-/// when we have a single input tensor from which the keys, the values,
-/// and the queries (`K`, `V`, and `Q`) are projected, all of the same shape.
-/// This allows to clump all projection matrices into a single one and calculating
-/// the projections faster, in one sweep.
+/// It accepts 2 separate inputs: one for queries and another for the keys/values.
+/// Input for keys and values can have sequence length different from the sequence
+/// length of queries.
+///
+/// This allows for construction of encoder-decoder models, in which a decoder
+/// "interrogates" through its queries whatever values were produced by an encoder.
 #[derive(Debug)]
-pub struct MultiHeadSelfAttention {
-    pub causal: bool,
-    pub num_heads: usize,
-    pub key_query_value_dim: usize,
-    pub output_dim: usize,
-    qkv_weights: Tensor,
-    output_weights: Tensor,
+pub struct StandardMultiHeadAttentionStrategy<ConfigType> {
+    config: ConfigType,
 }
 
-impl MultiHeadSelfAttention {
-    /// Creates a new multi-head self-attention layer accepting input the shape of
-    /// (batch-size, sequence-length, `input_dim`). This input will be projected into `num_heads`
-    /// sets of queries, keys, and values with shapes of (sequence-length, `key_query_value_dim`).
-    /// Each set is thus represent a sigle attention head, and the dimensions for keys and values
-    /// are given for a single head too.
-    ///
-    /// The output's combined last dimension, if `None` is given, will be set to be the size of
-    /// `key_query_value_dim` * `num_heads`.
-    ///
-    /// If `causal` is true, each position in the sequence will be limited in attending
-    /// (in "seeing") only to itself and the precediing positions,
-    /// which is useful in time series forecasting and language modelling.
-    pub fn new(
-        vs: nn::Path,
-        causal: bool,
-        input_dim: usize,
-        num_heads: usize,
-        key_query_value_dim: usize,
-        output_dim: Option<usize>,
-    ) -> Self {
-        let actual_output_dim = output_dim.unwrap_or(key_query_value_dim * num_heads);
-        // * 3 for q, k and v
-        let qkv_dim = [
-            input_dim as i64,
-            (num_heads * key_query_value_dim * 3) as i64,
-        ];
-        // These weights are concatenated matrices W_q, W_k and W_v which
-        // are, in turn, concatenated W matrices of keys, queries and values
-        // for each of the heads. So, essentially it's a concatenation of
-        // W_q1, W_q2,..., W_qh, W_k1, W_k2,..., W_kh, W_v1, W_v2,..., W_vh
-        // for all h heads.
-        let qkv_weights = vs.kaiming_uniform("qkv_weights", &qkv_dim);
-        let output_shape = [
-            (key_query_value_dim * num_heads) as i64,
-            actual_output_dim as i64,
-        ];
-        let output_weights = vs.kaiming_uniform("output_weights", &output_shape);
+impl<ConfigType> AttentionStrategy for StandardMultiHeadAttentionStrategy<ConfigType>
+where
+    ConfigType: CausalMhaConfig + std::fmt::Debug + Clone,
+{
+    type Config = ConfigType;
 
+    fn new(vs: nn::Path, config: &Self::Config) -> Self {
         Self {
-            causal,
-            num_heads,
-            key_query_value_dim,
-            qkv_weights,
-            output_weights,
-            output_dim: actual_output_dim,
+            config: config.clone(),
         }
     }
 
-    /// Multi-head self-attention. Optimized for cases when attention receives
-    /// a single input tensor and all Q, K, V projections for attention
-    /// have the same dimensionality, allowing to calculate them all with
-    /// a single (faster) matrix multiplication.
-    /// Parameter `input` should be a tensor `[batch_size, seq_len, model_dim]`.
-    /// Attention mask is an optional tensor of 1s and 0s shaped as `[batch_size, seq_len]`
-    /// and marking positions that should be attended (1s) and padding that should not (0s).
-    /// Returns a tensor the shape of `[batch_size, seq_len, output_dim]`
-    pub fn forward(&self, input: &Tensor, attention_mask: Option<&Tensor>) -> Tensor {
-        let (batch_size, seq_len, _) = input.size3().expect(A3D_TENSOR);
-
-        let qkv = input.matmul(&self.qkv_weights).reshape(&[
-            batch_size,
-            seq_len,
-            3,
-            self.num_heads as i64,
-            self.key_query_value_dim as i64,
-        ]);
-
-        let seam_dim_index = 2;
-        // Splitting the keys, the values and the queries before further processing.
-        // Each will have shape (batch_size, seq_len, 1, num_heads, d_k).
-        // The redundant 1 dimension will be squeezed out later.
-        let qkv_chunks = qkv.split(1, seam_dim_index); // vec![q, k, v]
-        let attention_out = attention(
-            &qkv_chunks[0].squeeze_dim(seam_dim_index),
-            &qkv_chunks[1].squeeze_dim(seam_dim_index),
-            &qkv_chunks[2].squeeze_dim(seam_dim_index),
-            attention_mask,
-            self.causal,
-        );
-        // Output projection
-        attention_out.matmul(&self.output_weights)
-    }
-}
-
-/// Multi-head attention described in paper "Attention Is All You Need"
-/// (https://arxiv.org/pdf/1706.03762.pdf).
-///
-/// This implementation is designed to be fully abstract:
-///
-/// * it accepts 3 separate inputs: for the keys, the queries and the values
-/// * Inputs for keys and values can have sequence length different from the sequence length
-///   for queries.
-///
-/// This allows for construction of encoder-decoder models, where a decoder "interrogates"
-/// through its queries whatever was produced by an encoder.
-pub struct MultiHeadAttention {
-    pub causal: bool,
-    pub num_heads: usize,
-    pub key_query_dim: usize,
-    pub value_dim: usize,
-    pub output_dim: usize,
-    q_weights: Tensor,
-    k_weights: Tensor,
-    v_weights: Tensor,
-    output_weights: Tensor,
-}
-
-impl MultiHeadAttention {
-    /// Creates a new multi-head self-attention layer accepting 3 inputs the shapes of
-    ///
-    /// * (batch-size, sequence-length, `query_input_dim`)
-    /// * (batch-size, sequence-length, `key_input_dim`)
-    /// * (batch-size, sequence-length, `value_input_dim`)
-    ///
-    /// from which the queries, the keys, and the values will be projected by each of
-    /// the `num_heads` attention heads.
-    /// Each head will have its queries, keys, and values shaped as
-    /// (sequence-length, `key_query_dim`) and (sequence-length, `value_dim`) respectingly.
-    ///
-    /// The output's last combined dimension, if `None` is given, will be set to be the size of
-    /// `value_dim` * `num_heads`.
-    ///
-    /// If `causal` is true, each position in the sequence will be limited in attending
-    /// (in "seeing") only to itself and the precediing positions,
-    /// which is useful in time series forecasting and language modelling.
-    pub fn new(
-        vs: &nn::Path,
-        causal: bool,
-        query_input_dim: usize,
-        key_input_dim: usize,
-        value_input_dim: usize,
-        num_heads: usize,
-        key_query_dim: usize,
-        value_dim: usize,
-        output_dim: Option<usize>,
-    ) -> Self {
-        let actual_output_dim = output_dim.unwrap_or(value_dim * num_heads);
-        // These weights are concatenated matrices W_q, W_k and W_v which
-        // are, in turn, concatenated W matrices of keys, queries and values
-        // for each of the heads. So, essentially it's a concatenation of
-        // W_q1, W_q2,..., W_qh, W_k1, W_k2,..., W_kh, W_v1, W_v2,..., W_vh
-        // for all h heads.
-        let v_weights = vs.kaiming_uniform(
-            "v_weights",
-            &[value_input_dim as i64, (value_dim * num_heads) as i64],
-        );
-        let k_weights = vs.kaiming_uniform(
-            "k_weights",
-            &[key_input_dim as i64, (key_query_dim * num_heads) as i64],
-        );
-        let q_weights = vs.kaiming_uniform(
-            "q_weights",
-            &[query_input_dim as i64, (key_query_dim * num_heads) as i64],
-        );
-
-        let output_shape = [(value_dim * num_heads) as i64, actual_output_dim as i64];
-        let output_weights = vs.kaiming_uniform("output_weights", &output_shape);
-
-        Self {
-            causal,
-            num_heads,
-            key_query_dim,
-            value_dim,
-            q_weights,
-            k_weights,
-            v_weights,
-            output_weights,
-            output_dim: actual_output_dim,
-        }
-    }
-
-    /// Multi-head attention. Inputs must be of the following dimensions:
-    ///
-    /// * `query_input`: `[batch_size, query_seq_len, query_input_dim]`.
-    /// * `key_input`: `[batch_size, key_value_seq_len, key_input_dim]`.
-    /// * `value_input`: `[batch_size, key_value_seq_len, value_input_dim]`.
-    /// * `attention_mask`: 1s or 0s for keys that should and should not be attended,
-    ///    shaped as (batch_size, key_value_seq_len)
-    ///
-    /// Returns a tensor the shape of `[batch_size, value_seq_len, output_dim]`
-    pub fn forward(
+    fn attention(
         &self,
-        query_input: &Tensor,
-        key_input: &Tensor,
-        value_input: &Tensor,
+        q: &Tensor,
+        k: &Tensor,
+        v: &Tensor,
         attention_mask: Option<&Tensor>,
+        training: bool,
     ) -> Tensor {
-        let (value_batch_size, value_seq_len, _) = value_input.size3().expect(A3D_TENSOR);
-        let (key_batch_size, key_seq_len, _) = key_input.size3().expect(A3D_TENSOR);
-        let (query_batch_size, query_seq_len, _) = key_input.size3().expect(A3D_TENSOR);
-        assert_eq!(
-            value_seq_len, key_seq_len,
-            "Key and value sequences must not have different lengths. Currently {} and {}",
-            key_seq_len, value_seq_len
-        );
-        assert_eq!(
-            key_batch_size, value_batch_size,
-            "Key and value sequences must have the same batch sizes. Currently {} and {}",
-            key_batch_size, value_batch_size
-        );
-        assert_eq!(
-            key_batch_size, query_batch_size,
-            "Key and query sequences must have the same batch sizes. Currently {} and {}",
-            key_batch_size, query_batch_size
-        );
-        let batch_size = value_batch_size;
-        let kv_seq_len = value_seq_len;
-        //  The first thing we need to do is to perform affine transformations
-        //  of the inputs to get the Queries, the Keys and the Values.
-        //  Each will have shape (batch_size, num_heads, sequence_len, dim)
-        let v = value_input.matmul(&self.v_weights).reshape(&[
-            batch_size,
-            kv_seq_len,
-            self.num_heads as i64,
-            self.value_dim as i64,
-        ]);
-        let k = key_input.matmul(&self.k_weights).reshape(&[
-            batch_size,
-            kv_seq_len,
-            self.num_heads as i64,
-            self.key_query_dim as i64,
-        ]);
-        let q = query_input.matmul(&self.q_weights).reshape(&[
-            batch_size,
-            query_seq_len,
-            self.num_heads as i64,
-            self.key_query_dim as i64,
-        ]);
-        let attention_out = attention(&q, &k, &v, attention_mask, self.causal);
-        attention_out.matmul(&self.output_weights)
+        attention(q, k, v, attention_mask, self.config.is_causal())
     }
 }
+
+#[derive(Clone, Debug)]
+pub struct StandardSelfMhaConfig {
+    /// Last dimension of input from which queries, keys and values are constructed
+    pub input_dim: usize,
+    /// number of attention heads
+    pub num_heads: usize,
+    pub head_key_query_value_dim: usize,
+    pub output_dim: usize,
+    pub causal: bool,
+}
+
+#[rustfmt::skip]
+impl SelfMhaConfig for StandardSelfMhaConfig {
+    fn input_dim(&self) -> usize { self.input_dim }
+    fn num_heads(&self) -> usize { self.num_heads }
+    fn head_key_query_value_dim(&self) -> usize { self.head_key_query_value_dim }
+    fn output_dim(&self) -> usize { self.output_dim }
+}
+
+impl CausalMhaConfig for StandardSelfMhaConfig {
+    fn is_causal(&self) -> bool {
+        self.causal
+    }
+}
+
+pub type StandardMultiHeadAttention =
+    GeneralMultiHeadAttention<StandardMultiHeadAttentionStrategy<StandardMhaConfig>>;
+pub type StandardMultiHeadSelfAttention =
+    GeneralMultiHeadSelfAttention<StandardMultiHeadAttentionStrategy<StandardSelfMhaConfig>>;
 
 #[cfg(test)]
 mod test {
