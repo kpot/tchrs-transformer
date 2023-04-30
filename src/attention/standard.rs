@@ -7,7 +7,6 @@ use super::general::{
 use tch::{nn, Tensor};
 
 const A4D_TENSOR: &str = "Tensor must be 4-dimensional";
-const A3D_TENSOR: &str = "Tensor must be 3-dimensional";
 
 /// Ensures that each position (of a decoder's self-attention) cannot attend
 /// to subsequent positions. Such connections in a QK matrix are represented by items
@@ -107,8 +106,8 @@ impl CausalMhaConfig for StandardMhaConfig {
     }
 }
 
-/// Canonical multi-head attention described in paper "Attention Is All You Need"
-/// (https://arxiv.org/pdf/1706.03762.pdf).
+/// Canonical multi-head attention described in paper
+/// ["Attention Is All You Need"](https://arxiv.org/pdf/1706.03762.pdf).
 ///
 /// It accepts 2 separate inputs: one for queries and another for the keys/values.
 /// Input for keys and values can have sequence length different from the sequence
@@ -127,7 +126,7 @@ where
 {
     type Config = ConfigType;
 
-    fn new(vs: nn::Path, config: &Self::Config) -> Self {
+    fn new(_vs: nn::Path, config: &Self::Config) -> Self {
         Self {
             config: config.clone(),
         }
@@ -139,7 +138,7 @@ where
         k: &Tensor,
         v: &Tensor,
         attention_mask: Option<&Tensor>,
-        training: bool,
+        _training: bool,
     ) -> Tensor {
         attention(q, k, v, attention_mask, self.config.is_causal())
     }

@@ -87,13 +87,13 @@ pub struct NystromSelfAttentionConfig {
     pub conv_kernel_size: Option<usize>,
 }
 
-// #[rustfmt::skip]
-// impl SelfMhaConfig for NystromSelfAttentionConfig {
-//     fn input_dim(&self) -> usize { self.input_dim }
-//     fn num_heads(&self) -> usize { self.num_heads }
-//     fn head_key_query_value_dim(&self) -> usize { self.head_key_query_value_dim }
-//     fn output_dim(&self) -> usize { self.output_dim }
-// }
+#[rustfmt::skip]
+impl SelfMhaConfig for NystromSelfAttentionConfig {
+    fn input_dim(&self) -> usize { self.input_dim }
+    fn num_heads(&self) -> usize { self.num_heads }
+    fn head_key_query_value_dim(&self) -> usize { self.head_key_query_value_dim }
+    fn output_dim(&self) -> usize { self.output_dim }
+}
 
 #[rustfmt::skip]
 impl MhaConfig for NystromSelfAttentionConfig {
@@ -111,6 +111,9 @@ impl NystromMhaConfig for NystromSelfAttentionConfig {
     fn num_landmarks(&self) -> usize { self.num_landmarks }
 }
 
+/// Nystrom attention itself. Implementation is based
+/// on [code](https://github.com/mlpen/Nystromformer) published
+/// by the authors of the original paper.
 #[derive(Debug)]
 pub struct NystromAttentionStrategy<ConfigType> {
     config: ConfigType,
@@ -160,7 +163,7 @@ where
         // reshaping to facilitates the use of batch matmul down the line
         let q_t = q.transpose(2, 1); // to (batch_size, num_heads, seq_len, d_q)
         let k_t = k.permute(&[0, 2, 3, 1]); // (batch, num_heads, d_k, seq_len)
-        let k_landmarks_t = &k_landmarks.transpose(-2, -1); // (batch, num_heads, d_k, seq_len)
+        let k_landmarks_t = k_landmarks.transpose(-2, -1); // (batch, num_heads, d_k, seq_len)
         let sqrt_d = (k_dim as f64).sqrt();
 
         let f_kernel = (q_t.matmul(&k_landmarks_t) / sqrt_d).softmax(-1, q.kind());
@@ -169,7 +172,7 @@ where
             pre_b_kernel += -1e5 * (1.0 - attention_mask.view([batch_size, 1, 1, -1]));
         }
         let b_kernel = pre_b_kernel.softmax(-1, q.kind());
-        let a_kernel = (q_landmarks.matmul(k_landmarks_t) / sqrt_d).softmax(-1, q.kind());
+        let a_kernel = (q_landmarks.matmul(&k_landmarks_t) / sqrt_d).softmax(-1, q.kind());
         let a_kernel_inv = fixed_iterative_inv(&a_kernel, 6, true);
         //  A full attention matrix would look like this:
         //  full_attention = (q.matmul(k_t) / sqrt_d).softmax(-1, q.kind())
@@ -245,7 +248,7 @@ fn form_landmarks(t: &Tensor, num_landmarks: usize) -> Tensor {
                 .reshape(&[
                     batch_size,
                     num_heads,
-                    num_normal_landmarks as i64,
+                    num_normal_landmarks,
                     chunk_len,
                     head_dim,
                 ])
@@ -255,7 +258,7 @@ fn form_landmarks(t: &Tensor, num_landmarks: usize) -> Tensor {
                 .reshape(&[
                     batch_size,
                     num_heads,
-                    num_larger_landmarks as i64,
+                    num_larger_landmarks,
                     chunk_len + 1,
                     head_dim,
                 ])
@@ -317,7 +320,7 @@ fn fixed_iterative_inv(matrix: &Tensor, num_iterations: usize, from_softmax: boo
         let av = matrix.matmul(&v);
         v = 0.25 * v.matmul(&(13.0 * &i - av.matmul(&(15.0 * &i - av.matmul(&(7.0 * &i - &av))))));
     }
-    return v;
+    v
 }
 
 #[cfg(test)]

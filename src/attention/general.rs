@@ -69,7 +69,7 @@ where
     S: AttentionStrategy,
     S::Config: MhaConfig,
 {
-    fn new(vs: nn::Path, c: S::Config) -> Self {
+    pub fn new(vs: nn::Path, c: S::Config) -> Self {
         // These weights are concatenated matrices W_q, W_k and W_v which
         // are, in turn, concatenated W matrices of keys, queries and values
         // for each of the heads. So, essentially it's a concatenation of
