@@ -136,14 +136,11 @@ fn run_epoch_on_batches(
     model: &Albert,
     tokenizer_vocabulary: usize,
 ) -> (f32, f32) {
-    const LAST_AXIS: &[i64] = &[-1i64];
     let mut epoch_total_loss = 0.0;
     let mut epoch_total_repl_perplexity = 0.0;
     let mut epoch_batches = 0.0;
     for (batch_index, batch) in batches.enumerate() {
         let batch = batch.to_device(device);
-        // Ignoring the offsets for the sake simplicity
-        let zero_offsets = batch.doc_offsets.zeros_like();
         let model_output = model.forward_t(
             &batch.masked_slices,
             &batch.doc_offsets,
@@ -151,40 +148,22 @@ fn run_epoch_on_batches(
             optimizer.is_some(),
         );
         // Calculating the loss
-        let targets = batch.doc_slices.one_hot(tokenizer_vocabulary as i64);
-        let softmax_output = model_output.softmax(-1, tch::Kind::Float);
         let output_log_softmax = model_output.log_softmax(-1, tch::Kind::Float);
-        let per_token_cross_entropy = -(targets * &output_log_softmax).sum_dim_intlist(
-            Some(LAST_AXIS),
-            false,
-            tch::Kind::Float,
-        );
-        let float_replacement_masks = batch.replacement_masks.to_kind(tch::Kind::Float);
-        let num_tokens_replaced = float_replacement_masks.sum(tch::Kind::Float);
-        let masked_loss = (&float_replacement_masks * &per_token_cross_entropy)
-            .sum(tch::Kind::Float)
-            / &num_tokens_replaced;
-
-        // Penalty for confidence of the output distribution, as described in
-        // "Regularizing Neural Networks by Penalizing Confident
-        // Output Distributions" (https://arxiv.org/abs/1701.06548)
-        const CONFIDENCE_PENALTY_WEIGHT: f64 = 0.1;
-        let per_token_confidence_penalty = -(softmax_output * &output_log_softmax).sum_dim_intlist(
-            Some(LAST_AXIS),
-            false,
-            tch::Kind::Float,
-        );
-        let masked_confidence_pendalty = (&float_replacement_masks * &per_token_confidence_penalty)
-            .sum(tch::Kind::Float)
-            / &num_tokens_replaced;
-        let loss = masked_loss + CONFIDENCE_PENALTY_WEIGHT * masked_confidence_pendalty;
-
-        // Perplexity for masked tokens only
-        let repl_masked_perplexity = (per_token_cross_entropy
+        let per_token_cross_entropy = output_log_softmax
+            .reshape(&[-1, tokenizer_vocabulary as i64])
+            .g_nll_loss::<Tensor>(
+                &batch.doc_slices.reshape(&[-1]),
+                None,
+                tch::Reduction::None,
+                -100,
+            )
+            .reshape_as(&batch.doc_slices);
+        // Loss for masked tokens only
+        let loss = per_token_cross_entropy
             .masked_select(&batch.replacement_masks)
-            .sum(tch::Kind::Float)
-            / &num_tokens_replaced)
-            .exp();
+            .mean(tch::Kind::Float);
+        // Perplexity for masked tokens only
+        let repl_masked_perplexity = loss.exp();
         // Backprop
         if let Some(ref mut optimizer) = optimizer {
             optimizer.backward_step(&loss);
