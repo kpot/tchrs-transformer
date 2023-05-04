@@ -37,10 +37,10 @@ pub struct AlbertConfig {
 impl Default for AlbertConfig {
     fn default() -> Self {
         Self {
-            transformer_depth: 5,
-            embedding_dim: 512,
+            transformer_depth: 12,
+            embedding_dim: 128,
             vocab_size: 16384,
-            num_heads: 12,
+            num_heads: 64,
             key_query_value_dim: 64,
             dropout: 0.1,
             position_source: PositionSourceConfig::Encoding,
