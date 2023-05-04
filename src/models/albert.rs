@@ -6,7 +6,8 @@
 use tch::nn::Module;
 use tch::{nn, Tensor};
 
-use crate::attention::standard::{StandardMultiHeadSelfAttention, StandardSelfMhaConfig};
+use crate::attention::general::{AttentionStrategy, SelfMhaConfig};
+use crate::block::{AttentionWiring, SelfAttentingBlock, TransformerBlockConfig};
 use crate::embeddings::TiedOutputEmbedding;
 use crate::positional_encoding::transformer_coordinate_encoding;
 
@@ -56,146 +57,8 @@ impl AlbertConfig {
             num_heads: self.num_heads,
             attention_wiring: AttentionWiring::PreLayerNorm,
             dropout: self.dropout,
+            causal: false,
         }
-    }
-}
-
-/// Two classical types of wiring attention in Transformers, as described in
-/// paper ["Understanding the Difficulty of Training Transformers"](https://arxiv.org/abs/2004.08249)
-#[derive(Clone, Debug)]
-pub enum AttentionWiring {
-    /// Pre-attention: Layer Normalization is done before the attention,
-    /// and can be fully bypassed through residual conections.
-    PreLayerNorm,
-    /// Post-attention:  Layer Normalization is done after the attention,
-    /// and cannot be bypassed through residual connections.
-    PostLayerNorm,
-}
-
-#[derive(Debug, Clone)]
-pub struct TransformerBlockConfig {
-    /// Input and output last dimension size
-    pub input_output_dim: usize,
-    /// dimensionality of keys, queries and values in each attention head
-    pub key_query_value_dim: usize,
-    /// how many attention heads to use
-    pub num_heads: usize,
-    /// whether to use Pre-LN or Post-LN wiring
-    pub attention_wiring: AttentionWiring,
-    /// Dropout for all stages
-    pub dropout: f64,
-}
-
-#[derive(Debug)]
-pub struct TransformerBlock {
-    norm1_layer: nn::LayerNorm,
-    norm2_layer: nn::LayerNorm,
-    transition1_layer: nn::Linear,
-    transition2_layer: nn::Linear,
-    attention: StandardMultiHeadSelfAttention,
-    config: TransformerBlockConfig,
-}
-
-impl TransformerBlock {
-    pub fn new(p: nn::Path, config: TransformerBlockConfig) -> Self {
-        const TRANSITION_SCALER: usize = 4;
-        let attention = StandardMultiHeadSelfAttention::new(
-            &p / "attention",
-            StandardSelfMhaConfig {
-                input_dim: config.input_output_dim,
-                num_heads: config.num_heads,
-                head_key_query_value_dim: config.key_query_value_dim,
-                output_dim: config.input_output_dim,
-                causal: false,
-            },
-        );
-        let norm1_layer = nn::layer_norm(
-            &p / "layer_norm1",
-            vec![config.input_output_dim as i64],
-            Default::default(),
-        );
-        let norm2_layer = nn::layer_norm(
-            &p / "layer_norm2",
-            vec![config.input_output_dim as i64],
-            Default::default(),
-        );
-        let transition_dim = (TRANSITION_SCALER * attention.config.output_dim) as i64;
-        let transition1_layer = nn::linear(
-            &p / "trans1",
-            config.input_output_dim as i64,
-            transition_dim,
-            Default::default(),
-        );
-        let transition2_layer = nn::linear(
-            &p / "trans2",
-            transition_dim,
-            config.input_output_dim as i64,
-            Default::default(),
-        );
-        Self {
-            config,
-            norm1_layer,
-            norm2_layer,
-            transition1_layer,
-            transition2_layer,
-            attention,
-        }
-    }
-
-    pub fn forward_t(
-        &self,
-        input: &Tensor,
-        attention_mask: Option<&Tensor>,
-        train: bool,
-    ) -> Tensor {
-        match self.config.attention_wiring {
-            AttentionWiring::PreLayerNorm => self.pre_ln_forward_t(input, attention_mask, train),
-            AttentionWiring::PostLayerNorm => self.post_ln_forward_t(input, attention_mask, train),
-        }
-    }
-
-    fn post_ln_forward_t(
-        &self,
-        input: &Tensor,
-        attention_mask: Option<&Tensor>,
-        train: bool,
-    ) -> Tensor {
-        let att = self
-            .attention
-            .forward_t(input, attention_mask, train)
-            .dropout(self.config.dropout, train);
-        let post_residual1 = att + input;
-        let norm1_output = post_residual1.apply(&self.norm1_layer);
-        let post_transitional = norm1_output
-            .apply(&self.transition1_layer)
-            .gelu("none")
-            .dropout(self.config.dropout, train)
-            .apply(&self.transition2_layer)
-            .dropout(self.config.dropout, train);
-        let post_residual2 = post_transitional + norm1_output;
-        post_residual2.apply(&self.norm2_layer)
-    }
-
-    fn pre_ln_forward_t(
-        &self,
-        input: &Tensor,
-        attention_mask: Option<&Tensor>,
-        train: bool,
-    ) -> Tensor {
-        let norm1_output = input.apply(&self.norm1_layer);
-        let att = self
-            .attention
-            .forward_t(&norm1_output, attention_mask, train)
-            .dropout(self.config.dropout, train);
-        let post_residual1 = att + input;
-        let post_transitional = post_residual1
-            .apply(&self.norm2_layer)
-            .apply(&self.transition1_layer)
-            .gelu("none")
-            .dropout(self.config.dropout, train)
-            .apply(&self.transition2_layer)
-            .dropout(self.config.dropout, train);
-        post_transitional + post_residual1
     }
 }
 
@@ -208,16 +71,23 @@ pub enum TransformerPositionSource {
 /// down by sharing weights across all its transformer blocks. Based on paper
 /// [A Lite BERT for Self-supervised Learning of Language Representations](https://arxiv.org/abs/1909.11942)
 /// by Zhenzhong Lan et al.
-pub struct Albert {
+pub struct Albert<S>
+where
+    S: AttentionStrategy,
+{
     pub token_embedding: nn::Embedding,
-    pub transformer_step: TransformerBlock,
+    pub transformer_step: SelfAttentingBlock<S>,
     pub config: AlbertConfig,
     pub input_layer_norm: nn::LayerNorm,
     pub position_source: TransformerPositionSource,
     pub output_embedding: TiedOutputEmbedding,
 }
 
-impl Albert {
+impl<S> Albert<S>
+where
+    S: AttentionStrategy,
+    S::Config: From<TransformerBlockConfig> + SelfMhaConfig,
+{
     pub fn new(vs: nn::Path, config: AlbertConfig) -> Self {
         let token_embedding = nn::embedding(
             &vs / "token_embedding",
@@ -231,7 +101,8 @@ impl Albert {
             config.embedding_dim,
             config.vocab_size,
         );
-        let transformer_step = TransformerBlock::new(&vs / "transformer0", config.block_config());
+        let transformer_step =
+            SelfAttentingBlock::<S>::new(&vs / "transformer0", config.block_config());
         let input_layer_norm = nn::layer_norm(
             &vs / "input_layer_norm",
             vec![config.embedding_dim as i64],
@@ -295,9 +166,9 @@ impl Albert {
                     step_output.kind(),
                 );
             }
-            step_output =
-                self.transformer_step
-                    .pre_ln_forward_t(&step_output, attention_masks, training);
+            step_output = self
+                .transformer_step
+                .forward_t(&step_output, attention_masks, training);
         }
         self.output_embedding
             .forward(&self.token_embedding.ws, &step_output)

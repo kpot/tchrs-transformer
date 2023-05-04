@@ -10,6 +10,9 @@ use std::path;
 
 use tch::nn::{self, OptimizerConfig};
 use tch::Tensor;
+use tchrs_transformer::attention::standard::{
+    StandardMultiHeadAttentionStrategy, StandardSelfMhaConfig,
+};
 use tokenizers::Tokenizer;
 
 use tchrs_transformer::models::albert::Albert;
@@ -19,7 +22,7 @@ use tchrs_transformer::training::schedulers::CosineLRSchedule;
 const MAX_SEQUENCE_LEN: usize = 256;
 const BATCH_SIZE: usize = 16;
 const LEARNING_RATE: f64 = 5e-5;
-const DATASET_FLAVOR: wikitext::WikiTextFlavor = wikitext::WikiTextFlavor::Raw2;
+const DATASET_FLAVOR: wikitext::WikiTextFlavor = wikitext::WikiTextFlavor::Raw103;
 const CACHE_SUBDIR: &str = "cache";
 
 mod tokenization;
@@ -32,13 +35,15 @@ fn tokens_from_tensor(t: &Tensor) -> Vec<u32> {
         .collect()
 }
 
+type AttentionKind = StandardMultiHeadAttentionStrategy<StandardSelfMhaConfig>;
+
 /// Just for fun, runs the model on a piece of masked text to see its behaves during the training.
 fn run_model(
     tokenizer: &Tokenizer,
     pad_token_id: u32,
     mask_token_id: u32,
     device: tch::Device,
-    model: &Albert,
+    model: &Albert<AttentionKind>,
 ) {
     let example =
         "The era of the wooden steam ship - of - the - line was brief , because of new , \
@@ -133,7 +138,7 @@ fn run_epoch_on_batches(
     epoch_size: usize,
     mut optimizer: Option<&mut nn::Optimizer>,
     device: tch::Device,
-    model: &Albert,
+    model: &Albert<AttentionKind>,
     tokenizer_vocabulary: usize,
 ) -> (f32, f32) {
     let mut epoch_total_loss = 0.0;
@@ -219,7 +224,7 @@ fn main() -> std::io::Result<()> {
     let mut optimizer = nn::AdamW::default()
         .build(&var_store, LEARNING_RATE)
         .expect("Unable to build optimizer");
-    let model = Albert::new(var_store.root() / "albert", Default::default());
+    let model = Albert::<AttentionKind>::new(var_store.root() / "albert", Default::default());
     let mut epoch_num_var = var_store
         .root()
         .var("epoch", &[], tch::nn::Init::Const(1.0));

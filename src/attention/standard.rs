@@ -1,5 +1,7 @@
 //! Various forms of multi-head attention described in paper "Attention Is All You Need".
 
+use crate::block::TransformerBlockConfig;
+
 use super::general::{
     AttentionStrategy, CausalMhaConfig, GeneralMultiHeadAttention, GeneralMultiHeadSelfAttention,
     MhaConfig, SelfMhaConfig,
@@ -173,6 +175,18 @@ pub type StandardMultiHeadAttention =
     GeneralMultiHeadAttention<StandardMultiHeadAttentionStrategy<StandardMhaConfig>>;
 pub type StandardMultiHeadSelfAttention =
     GeneralMultiHeadSelfAttention<StandardMultiHeadAttentionStrategy<StandardSelfMhaConfig>>;
+
+impl From<TransformerBlockConfig> for StandardSelfMhaConfig {
+    fn from(value: TransformerBlockConfig) -> Self {
+        Self {
+            input_dim: value.input_output_dim,
+            num_heads: value.num_heads,
+            head_key_query_value_dim: value.key_query_value_dim,
+            output_dim: value.input_output_dim,
+            causal: value.causal,
+        }
+    }
+}
 
 #[cfg(test)]
 mod test {
